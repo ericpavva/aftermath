@@ -30,7 +30,7 @@ local ok, err =
         end)
         local GAME_GRAVITY_MPS = GAME_GRAVITY_STUDS / STUDS_PER_METER
 
-        local WEAPONS = {
+               local WEAPONS = {
             [1]  = { name = "SVD",               velocity = 1322.9, range = 1945.5, drop_mult = 1.13, patterns = { "svd" } },
             [2]  = { name = "Revolver",          velocity = 583.6,  range = 778.2,  drop_mult = 1.13, patterns = { "revolver" } },
             [3]  = { name = "MP5",               velocity = 680.9,  range = 389.1,  drop_mult = 1.13, patterns = { "mp5" } },
@@ -70,8 +70,9 @@ local ok, err =
             [37] = { name = "Saiga-12",          velocity = 428.0,  range = 108.9,  drop_mult = 1.13, patterns = { "saiga" } },
             [38] = { name = "MK18",              velocity = 1322.9, range = 1945.5, drop_mult = 1.13, patterns = { "mk18" } },
             [39] = { name = "M110K",             velocity = 1322.9, range = 1945.5, drop_mult = 1.13, patterns = { "m110" } },
+            [40] = { name = "SKS",               velocity = 875.4,  range = 972.7,  drop_mult = 1.13, patterns = { "sks" } },
         }
-
+        
         local WEAPON_COMBO = {}
         for i, w in ipairs(WEAPONS) do
             WEAPON_COMBO[i] = w.name

@@ -1,4 +1,4 @@
-local VERSION = "1.992"
+local VERSION = "1.999"
 
 if not draw or not menu or not utility or not camera or not input or not thread then
     if notify and notify.error then
@@ -126,6 +126,7 @@ local ok, err =
             {t = "checkbox", id = "esp_enabled", n = "Enable ESP", v = false},
             {t = "multicombo", id = "targets", n = "Targets", o = {"Players", "Zombies"}, dv = {true, false}},
             {t = "checkbox", id = "disable_zombie_scan", n = "Disable Zombie Scan", v = false},
+            {t = "checkbox", id = "only_special", n = "Only Special Zombies", v = false},
             {t = "checkbox", id = "box", n = "Box", v = false, p = "esp_enabled", c = {1, 1, 1, 1}},
             {t = "combo", id = "box_type", n = "Box Style", o = {"2D", "Corner", "3D"}, v = 0, p = "box"},
             {t = "checkbox", id = "fill", n = "Box Filled", v = false, p = "esp_enabled", c = {1, 1, 1, 0.2}},
@@ -641,11 +642,29 @@ local ok, err =
             if not hrp then return nil end
 
             local kind, rig
+            local is_special = false
+
             if model:FindFirstChild("UpperTorso") then
                 kind, rig = "player", "R15"
             elseif model:FindFirstChild("Torso") then
                 if s.disable_zombie_scan then return nil end
                 kind, rig = "zombie", "R6"
+
+                local equip = model:FindFirstChild("Equipment")
+                if equip then
+                    local eq_model = equip:FindFirstChild("Model")
+                    if eq_model then
+                        local eq_head = eq_model:FindFirstChild("Head")
+                        if eq_head then
+                            local eq_main = eq_head:FindFirstChild("Main")
+                            if eq_main then
+                                if eq_main:FindFirstChild("AttachmentHelmetMask") then
+                                    is_special = true
+                                end
+                            end
+                        end
+                    end
+                end
             else
                 return nil
             end
@@ -666,7 +685,8 @@ local ok, err =
             return {
                 kind = kind, rig = rig, hrp = hrp,
                 head = model:FindFirstChild("Head"),
-                model = model, body = body, skel = skel
+                model = model, body = body, skel = skel,
+                is_special = is_special
             }
         end
 
@@ -821,7 +841,15 @@ local ok, err =
             local b, dist, bb = project(e, cam)
             if not b or dist > s.max_distance then return end
 
-            local col = s.box_color or {1, 1, 1, 1}
+            local col
+            if e.kind == "player" then
+                col = s.box_color or {1, 1, 1, 1}
+            elseif e.is_special then
+                col = {1, 0.8, 0, 1}
+            else
+                col = s.box_color or {1, 1, 1, 1}
+            end
+
             local cx = b.x + b.w * 0.5
             local btype = s.box_type or 0
 
@@ -843,15 +871,29 @@ local ok, err =
             end
 
             if s.name then
-                local label = e.kind == "player" and "Player" or "Zombie"
-                local nc = e.kind == "player" and (s.name_color or {1, 1, 1, 1}) or {1, 0.4, 0.4, 1}
+                local label
+                if e.kind == "player" then
+                    label = "Player"
+                elseif e.is_special then
+                    label = "SPECIAL ZOMBIE"
+                else
+                    label = "Zombie"
+                end
+                local nc
+                if e.kind == "player" then
+                    nc = s.name_color or {1, 1, 1, 1}
+                elseif e.is_special then
+                    nc = {1, 0.8, 0, 1}
+                else
+                    nc = {1, 0.4, 0.4, 1}
+                end
                 local fs = s.font_size or 13
                 local tw = draw.get_text_size(label, fs)
                 draw.text(cx - tw * 0.5, b.y - fs - 2, label, nc, fs)
             end
 
             if s.skeleton and not too_small then
-                local sc = s.skeleton_color or col
+                local sc = e.is_special and {1, 0.8, 0, 1} or (s.skeleton_color or col)
                 for k = 1, #e.skel do
                     local ap, bp = e.skel[k][1].Position, e.skel[k][2].Position
                     if ap and bp then
@@ -865,7 +907,7 @@ local ok, err =
             if s.head_dot and not too_small and e.head and e.head.Position then
                 local hpos = e.head.Position
                 local hx, hy, hv = draw.world_to_screen(hpos.X, hpos.Y, hpos.Z)
-                if hv then draw.circle(hx, hy, 4, s.head_dot_color or col, 16, 1.5) end
+                if hv then draw.circle(hx, hy, 4, e.is_special and {1, 0.8, 0, 1} or (s.head_dot_color or col), 16, 1.5) end
             end
 
             if s.viewline then
@@ -1395,7 +1437,14 @@ local ok, err =
                             local py = ccy - rz*scale
                             local ddx, ddy = px - ccx, py - ccy
                             if ddx*ddx + ddy*ddy <= clip_sq then
-                                local col = e.kind == "player" and {0.55,0.75,1,1} or {1,0.35,0.35,1}
+                                local col
+                                if e.kind == "player" then
+                                    col = {0.55,0.75,1,1}
+                                elseif e.is_special then
+                                    col = {1,0.8,0,1}
+                                else
+                                    col = {1,0.35,0.35,1}
+                                end
                                 draw.circle_filled(px, py, dot, col, 14)
                             end
                         end
@@ -1657,6 +1706,7 @@ local ok, err =
                 return
             end
 
+            local only_special = s.only_special == true
             local max_sq = (tonumber(s.max_distance) or 5000) ^ 2
             local cx, cy, cz = cam.X, cam.Y, cam.Z
 
@@ -1665,6 +1715,9 @@ local ok, err =
                 local hrp = e.hrp
                 if hrp and hrp.Address then
                     local match = (e.kind == "player" and show_players) or (e.kind == "zombie" and show_zombies)
+                    if only_special and e.kind == "zombie" and not e.is_special then
+                        match = false
+                    end
                     if match and not is_local_entity(e) then
                         local hp = hrp.Position
                         if hp then

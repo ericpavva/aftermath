@@ -125,6 +125,7 @@ local ok, err =
         local menu_items = {
             {t = "checkbox", id = "esp_enabled", n = "Enable ESP", v = false},
             {t = "multicombo", id = "targets", n = "Targets", o = {"Players", "Zombies"}, dv = {true, false}},
+            {t = "checkbox", id = "disable_zombie_scan", n = "Disable Zombie Scan", v = false},
             {t = "checkbox", id = "box", n = "Box", v = false, p = "esp_enabled", c = {1, 1, 1, 1}},
             {t = "combo", id = "box_type", n = "Box Style", o = {"2D", "Corner", "3D"}, v = 0, p = "box"},
             {t = "checkbox", id = "fill", n = "Box Filled", v = false, p = "esp_enabled", c = {1, 1, 1, 0.2}},
@@ -643,6 +644,7 @@ local ok, err =
             if model:FindFirstChild("UpperTorso") then
                 kind, rig = "player", "R15"
             elseif model:FindFirstChild("Torso") then
+                if s.disable_zombie_scan then return nil end
                 kind, rig = "zombie", "R6"
             else
                 return nil
@@ -672,8 +674,16 @@ local ok, err =
         local scan_queue = nil
         local scan_index = 1
         local scan_build = nil
+        local last_disable_zombie = false
 
         local function rescan_step()
+            if last_disable_zombie ~= s.disable_zombie_scan then
+                last_disable_zombie = s.disable_zombie_scan
+                scan_queue = nil
+                scan_build = nil
+                scan_index = 1
+            end
+
             if not scan_queue then
                 local ga = game.Workspace and game.Workspace:FindFirstChild("game_assets")
                 local folder = ga and ga:FindFirstChild("Entities")
@@ -1229,6 +1239,8 @@ local ok, err =
         local function update_visibility()
             if not menu.set_visible then return end
             local master = s.esp_enabled == true
+            local dzs = s.disable_zombie_scan == true
+
             menu.set_visible("targets", master)
             menu.set_visible("box_type", master and s.box == true)
             menu.set_visible("fill_op", master and s.fill == true)
@@ -1245,14 +1257,14 @@ local ok, err =
 
             local am = s.aim_enabled == true
             menu.set_visible("aim_key", am)
-            menu.set_visible("aim_zombies", am)
+            menu.set_visible("aim_zombies", am and not dzs)
             menu.set_visible("aim_target_type", am)
             menu.set_visible("aim_smooth", am)
             menu.set_visible("aim_hitbox", am)
             menu.set_visible("aim_fov_show", am)
             menu.set_visible("aim_fov", am)
             menu.set_visible("aim_max_dist", am)
-            menu.set_visible("aim_zombie_dist", am and s.aim_zombies == true)
+            menu.set_visible("aim_zombie_dist", am and s.aim_zombies == true and not dzs)
             menu.set_visible("aim_lock", am)
             menu.set_visible("aim_line", am)
             menu.set_visible("aim_line_style", am and s.aim_line == true)

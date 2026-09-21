@@ -22,6 +22,13 @@ local ok, err =
 
         local STUDS_PER_METER = 2.6
 
+        local DS_OFFSET_FB = 7
+        local DS_OFFSET_LR = -1
+        local DS_CIRCLE_RADIUS = 4
+        local DS_CIRCLE_SEGMENTS = 64
+        local DS_DEFAULT_TOGGLE = 0x58
+        local DS_DEFAULT_MODE = 0x56
+
         local GAME_GRAVITY_STUDS = 85
         pcall(function()
             if game.Workspace and game.Workspace.Gravity then
@@ -30,7 +37,7 @@ local ok, err =
         end)
         local GAME_GRAVITY_MPS = GAME_GRAVITY_STUDS / STUDS_PER_METER
 
-               local WEAPONS = {
+        local WEAPONS = {
             [1]  = { name = "SVD",               velocity = 1322.9, range = 1945.5, drop_mult = 1.13, patterns = { "svd" } },
             [2]  = { name = "Revolver",          velocity = 583.6,  range = 778.2,  drop_mult = 1.13, patterns = { "revolver" } },
             [3]  = { name = "MP5",               velocity = 680.9,  range = 389.1,  drop_mult = 1.13, patterns = { "mp5" } },
@@ -72,7 +79,7 @@ local ok, err =
             [39] = { name = "M110K",             velocity = 1322.9, range = 1945.5, drop_mult = 1.13, patterns = { "m110" } },
             [40] = { name = "SKS",               velocity = 875.4,  range = 972.7,  drop_mult = 1.13, patterns = { "sks" } },
         }
-        
+
         local WEAPON_COMBO = {}
         for i, w in ipairs(WEAPONS) do
             WEAPON_COMBO[i] = w.name
@@ -122,6 +129,7 @@ local ok, err =
         menu.add_group("Aftermath", "Ballistics")
         menu.add_group("Aftermath", "Radar")
         menu.add_group("Aftermath", "Weapon HUD")
+        menu.add_group("Aftermath", "Desync Marker")
 
         local menu_items = {
             {t = "checkbox", id = "esp_enabled", n = "Enable ESP", v = false},
@@ -187,7 +195,16 @@ local ok, err =
             {g = "Weapon HUD", t = "slider_int", id = "wh_x", n = "HUD X", min = 0, max = 2000, v = 20, p = "wh_enabled"},
             {g = "Weapon HUD", t = "slider_int", id = "wh_y", n = "HUD Y", min = 0, max = 2000, v = 20, p = "wh_enabled"},
             {g = "Weapon HUD", t = "slider_int", id = "wh_font", n = "Font Size", min = 8, max = 32, v = 16, p = "wh_enabled"},
-            {g = "Weapon HUD", t = "checkbox", id = "wh_debug", n = "Debug Overlay", v = false, p = "wh_enabled"}
+            {g = "Weapon HUD", t = "checkbox", id = "wh_debug", n = "Debug Overlay", v = false, p = "wh_enabled"},
+
+            {g = "Desync Marker", t = "checkbox", id = "ds_enabled", n = "Enable Desync Marker", v = false},
+            {g = "Desync Marker", t = "hotkey", id = "ds_toggle_key", n = "Toggle Marker Key", k = 0x58, p = "ds_enabled"},
+            {g = "Desync Marker", t = "hotkey", id = "ds_mode_key", n = "Toggle Camera Mode Key", k = 0x56, p = "ds_enabled"},
+            {g = "Desync Marker", t = "combo", id = "ds_camera_mode", n = "Camera Mode", o = {"1st Person", "3rd Person"}, v = 1, p = "ds_enabled"},
+            {g = "Desync Marker", t = "checkbox", id = "ds_show_hud", n = "Show HUD", v = true, p = "ds_enabled"},
+            {g = "Desync Marker", t = "checkbox", id = "ds_show_label", n = "Show Marker Label", v = true, p = "ds_enabled", c = {1, 0, 1, 1}},
+            {g = "Desync Marker", t = "checkbox", id = "ds_show_circle", n = "Show Desync Range Circle", v = true, p = "ds_enabled", c = {0.7, 0.3, 1, 0.6}},
+            {g = "Desync Marker", t = "checkbox", id = "ds_show_outside_warning", n = "Show Out-of-Range Warning", v = true, p = "ds_enabled"}
         }
 
         for _, m in ipairs(menu_items) do
@@ -1279,6 +1296,163 @@ local ok, err =
             end
         end
 
+        local ds_marker_pos = nil
+        local ds_last_toggle = 0
+        local ds_last_mode = 0
+        local ds_toggle_pressed = false
+        local ds_mode_pressed = false
+        local ds_camera_mode = 2
+
+        local function ds_get_player_position()
+            local cam = camera.GetPosition()
+            if not cam then return nil end
+
+            local fb = DS_OFFSET_FB
+            local lr = DS_OFFSET_LR
+
+            if ds_camera_mode == 1 then
+                return {x = cam.X, y = cam.Y, z = cam.Z}
+            end
+
+            local look = camera.GetLookVector()
+            if not look then return cam end
+
+            local right_x = -look.Z
+            local right_y = 0
+            local right_z = look.X
+
+            return {
+                x = cam.X + look.X * fb + right_x * lr,
+                y = cam.Y + look.Y * fb + right_y * lr,
+                z = cam.Z + look.Z * fb + right_z * lr,
+            }
+        end
+
+        local function draw_desync_marker()
+            if not s.ds_enabled then return end
+
+            local now = utility.get_tick_count()
+            local toggle_key = tonumber(s.ds_toggle_key) or DS_DEFAULT_TOGGLE
+            local mode_key = tonumber(s.ds_mode_key) or DS_DEFAULT_MODE
+
+            local toggle_down = false
+            pcall(function() toggle_down = input.is_key_down(toggle_key) end)
+            local mode_down = false
+            pcall(function() mode_down = input.is_key_down(mode_key) end)
+
+            if toggle_down and not ds_toggle_pressed and now - ds_last_toggle > 300 then
+                ds_toggle_pressed = true
+                ds_last_toggle = now
+
+                if ds_marker_pos then
+                    ds_marker_pos = nil
+                    if notify then
+                        notify.Warning("Desync", "Marker cleared")
+                    end
+                else
+                    local pos = ds_get_player_position()
+                    if pos then
+                        ds_marker_pos = pos
+                        if notify then
+                            notify.Success("Desync", "Marker saved")
+                        end
+                    end
+                end
+            elseif not toggle_down then
+                ds_toggle_pressed = false
+            end
+
+            if mode_down and not ds_mode_pressed and now - ds_last_mode > 300 then
+                ds_mode_pressed = true
+                ds_last_mode = now
+                ds_camera_mode = (ds_camera_mode == 1) and 2 or 1
+                if notify then
+                    notify.Success("Desync", ds_camera_mode == 1 and "1st Person" or "3rd Person")
+                end
+            elseif not mode_down then
+                ds_mode_pressed = false
+            end
+
+            local player_pos = ds_get_player_position()
+
+            if ds_marker_pos then
+                local dist = 0
+                if player_pos then
+                    local dx = ds_marker_pos.x - player_pos.x
+                    local dy = ds_marker_pos.y - player_pos.y
+                    local dz = ds_marker_pos.z - player_pos.z
+                    dist = sqrt(dx*dx + dy*dy + dz*dz)
+                end
+
+                local dist_m = dist / STUDS_PER_METER
+                local radius_m = DS_CIRCLE_RADIUS
+                local radius_studs = radius_m * STUDS_PER_METER
+                local outside = dist_m > radius_m
+
+                if s.ds_show_circle then
+                    local segments = DS_CIRCLE_SEGMENTS
+                    local circle_col = s.ds_show_circle_color or {0.7, 0.3, 1, 0.6}
+
+                    local prev_sx, prev_sy, prev_valid = nil, nil, false
+
+                    for i = 0, segments do
+                        local angle = (i / segments) * math.pi * 2
+                        local wx = ds_marker_pos.x + math.cos(angle) * radius_studs
+                        local wz = ds_marker_pos.z + math.sin(angle) * radius_studs
+                        local wy = ds_marker_pos.y
+
+                        local csx, csy, cvalid = draw.world_to_screen(wx, wy, wz)
+                        if cvalid and prev_valid then
+                            draw.line(prev_sx, prev_sy, csx, csy, circle_col, 2)
+                        end
+                        prev_sx, prev_sy, prev_valid = csx, csy, cvalid
+                    end
+                end
+
+                local sx, sy, on_screen = draw.world_to_screen(ds_marker_pos.x, ds_marker_pos.y, ds_marker_pos.z)
+                if on_screen then
+                    local mc = s.ds_show_label_color or {1, 0, 1, 1}
+                    if outside and s.ds_show_outside_warning then
+                        mc = {1, 0.2, 0.2, 1}
+                    end
+
+                    draw.circle(sx, sy, 12, mc, 32, 2)
+                    draw.circle(sx, sy, 6, mc, 16, 2)
+
+                    if s.ds_show_label then
+                        local txt1 = outside and "OUT OF RANGE" or "DESYNC"
+                        local txt2 = string.format("%.1fm / %dm", dist_m, radius_m)
+                        local tw1 = draw.get_text_size(txt1, 14)
+                        local tw2 = draw.get_text_size(txt2, 12)
+
+                        draw.text(sx - tw1 * 0.5, sy - 44, txt1, mc, 14)
+                        draw.text(sx - tw2 * 0.5, sy - 28, txt2, {mc[1], mc[2], mc[3], 0.7}, 12)
+                    end
+                end
+
+                if s.ds_show_hud then
+                    local mc = s.ds_show_label_color or {1, 0, 1, 1}
+                    local hud_col = outside and {1, 0.2, 0.2, 1} or mc
+
+                    draw.rect_filled(10, 10, 260, 95, {0.15, 0, 0.15, 0.9}, 4)
+                    draw.text(15, 15, "DESYNC MARKER", hud_col, 14)
+                    draw.text(15, 35, string.format("Dist: %.1fm / %dm", dist_m, radius_m), {1, 1, 1, 1}, 12)
+                    draw.text(15, 52, string.format("F/T: %d | Lat: %d", DS_OFFSET_FB, DS_OFFSET_LR), {0.8, 0.8, 1, 1}, 11)
+                    draw.text(15, 68, ds_camera_mode == 1 and "Mode: 1st Person" or "Mode: 3rd Person", {0.8, 0.8, 1, 1}, 10)
+
+                    if outside and s.ds_show_outside_warning then
+                        draw.text(15, 82, "! OUT OF RANGE !", {1, 0.2, 0.2, 1}, 10)
+                    else
+                        draw.text(15, 82, "In Range", {0.5, 1, 0.5, 1}, 10)
+                    end
+                end
+            elseif s.ds_show_hud then
+                draw.rect_filled(10, 10, 240, 40, {0.1, 0.1, 0.1, 0.7}, 4)
+                draw.text(15, 15, "DESYNC MARKER", {0.5, 0.5, 0.5, 1}, 14)
+                draw.text(15, 32, "Press Toggle Key", {0.7, 0.7, 0.7, 1}, 11)
+            end
+        end
+
         local function update_visibility()
             if not menu.set_visible then return end
             local master = s.esp_enabled == true
@@ -1332,6 +1506,15 @@ local ok, err =
             menu.set_visible("wh_y", wh)
             menu.set_visible("wh_font", wh)
             menu.set_visible("wh_debug", wh)
+
+            local ds = s.ds_enabled == true
+            menu.set_visible("ds_toggle_key", ds)
+            menu.set_visible("ds_mode_key", ds)
+            menu.set_visible("ds_camera_mode", ds)
+            menu.set_visible("ds_show_hud", ds)
+            menu.set_visible("ds_show_label", ds)
+            menu.set_visible("ds_show_circle", ds)
+            menu.set_visible("ds_show_outside_warning", ds)
         end
 
         local radar_tx, radar_ty = nil, nil
@@ -1540,7 +1723,9 @@ local ok, err =
                     config[id .. "_color"] = string.format("%.4f,%.4f,%.4f,%.4f",
                         col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
                 elseif item.type == "key" then
-                    config[id .. "_key"] = tostring(tonumber(menu.get_key(id)) or 0)
+                    local key = 0
+                    pcall(function() key = tonumber(menu.get_key(id)) or 0 end)
+                    config[id .. "_key"] = tostring(key)
                 elseif item.type == "multibool" then
                     local v = s[id] or {}
                     local packed = {}
@@ -1648,7 +1833,9 @@ local ok, err =
                     end
                 end
                 if item.key and data[id .. "_key"] then
-                    pcall(function() menu.set_key(id, tonumber(data[id .. "_key"]) or 0) end)
+                    local key = tonumber(data[id .. "_key"]) or 0
+                    pcall(function() menu.set_key(id, key) end)
+                    s[id] = key
                 end
             end
 
@@ -1699,6 +1886,7 @@ local ok, err =
             pcall(draw_radar, cam)
             pcall(draw_weapon_hud)
             pcall(draw_vehicles, cam)
+            pcall(draw_desync_marker)
 
             local t = s.targets or {}
             local show_players = t[1] == true

@@ -1,4 +1,4 @@
-local VERSION = "1.999"
+local VERSION = "2.0"
 
 if not draw or not utility or not camera or not input or not thread then
     if notify and notify.Error then notify.Error("Aftermath", "Incompatible Vector build") end
@@ -29,6 +29,87 @@ pcall(function()
     end
 end)
 local GAME_GRAVITY_MPS = GAME_GRAVITY_STUDS / STUDS_PER_METER
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- PERF PROFILER (desligado por padrão — liga/desliga com END)
+-- ═══════════════════════════════════════════════════════════════════════
+
+local function key_down_early(vk)
+    if input and input.IsKeyDown then
+        local ok, d = pcall(input.IsKeyDown, vk)
+        return ok and d == true
+    end
+    return false
+end
+
+local PERF = {
+    enabled = false,
+    samples = {},
+    last_report = 0,
+    report_interval = 5.0,
+    toggle_key = 0x23,
+    toggle_prev = false,
+}
+
+local function perf_start() return (utility.GetTime and utility.GetTime()) or os.clock() end
+
+local function perf_record(name, t0)
+    if not PERF.enabled then return end
+    local ms = (perf_start() - t0) * 1000
+    if not PERF.samples[name] then PERF.samples[name] = { sum = 0, count = 0, max = 0 } end
+    local b = PERF.samples[name]
+    b.sum = b.sum + ms
+    b.count = b.count + 1
+    if ms > b.max then b.max = ms end
+end
+
+local function perf_report()
+    if not PERF.enabled then return end
+    local now = perf_start()
+    if now - PERF.last_report < PERF.report_interval then return end
+    PERF.last_report = now
+
+    local entries = {}
+    for name, b in pairs(PERF.samples) do
+        if b.count > 0 then
+            entries[#entries + 1] = {
+                name = name,
+                avg = b.sum / b.count,
+                max = b.max,
+                count = b.count,
+            }
+        end
+    end
+    table.sort(entries, function(a, b) return a.max > b.max end)
+
+    print("=== AFTERMATH PERF REPORT ===")
+    local fps = utility.GetFPS and utility.GetFPS() or 0
+    print(string.format("FPS: %.0f", fps))
+    for i = 1, math.min(#entries, 12) do
+        local e = entries[i]
+        if e.max > 0.5 then
+            print(string.format("  %-20s avg %6.2fms  max %6.2fms  (%d calls)",
+                e.name, e.avg, e.max, e.count))
+        end
+    end
+    print("=============================")
+
+    PERF.samples = {}
+end
+
+local function perf_toggle_check()
+    local kd = key_down_early(PERF.toggle_key)
+    if kd and not PERF.toggle_prev then
+        PERF.enabled = not PERF.enabled
+        if PERF.enabled then
+            print("[Aftermath] Perf overlay ON (END to toggle)")
+        else
+            print("[Aftermath] Perf overlay OFF")
+            PERF.samples = {}
+        end
+    end
+    PERF.toggle_prev = kd
+end
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- UI ENGINE
@@ -100,6 +181,7 @@ UI:apply_ui_settings()
 
 local VK_NAMES = {
     [0x01] = "LMB", [0x02] = "RMB", [0x04] = "MMB",
+    [0x05] = "MB4", [0x06] = "MB5",
     [0x08] = "Backspace", [0x09] = "Tab", [0x0D] = "Enter",
     [0x10] = "Shift", [0x11] = "Ctrl", [0x12] = "Alt",
     [0x13] = "Pause", [0x14] = "CapsLock", [0x1B] = "Escape",
@@ -652,7 +734,6 @@ local function draw_window(self)
         return
     end
 
-    -- se algum dropdown está aberto, bloqueia input dos widgets por baixo
     local block_input = (st.open_combo ~= nil) or (st.picker ~= nil)
 
     local pad = 8
@@ -732,7 +813,6 @@ local function draw_window(self)
         draw.RectFilled(sb_x, bar_y, sb_w, bar_h, self.COLORS.accent, 2)
     end
 
-    -- dropdown overlay SEMPRE por último
     draw_open_combo_overlay(self)
 
     if st.picker then
@@ -762,11 +842,18 @@ local function process_hotkey_listening(self)
         self.state.listening_key = nil
         return
     end
-    for vk = 1, 254 do
-        if vk ~= 0x01 and key_down(vk) then
+    if key_down(0x01) then
+        self.state.listening_key = nil
+        return
+    end
+    for vk = 0x02, 0xFF do
+        if key_down(vk) then
             self.state.keys[self.state.listening_key] = vk
+            if self.state.callbacks[self.state.listening_key] then
+                pcall(self.state.callbacks[self.state.listening_key], vk)
+            end
             self.state.listening_key = nil
-            break
+            return
         end
     end
 end
@@ -835,6 +922,9 @@ local WEAPONS = {
     [39] = { name = "M110K",             velocity = 1322.9, range = 1945.5, drop_mult = 1.13, patterns = { "m110" } },
     [40] = { name = "SKS",               velocity = 875.4,  range = 972.7,  drop_mult = 1.13, patterns = { "sks" } },
     [41] = { name = "AWM",               velocity = 1322.9, range = 1945.5, drop_mult = 1.13, patterns = { "awm" } },
+    [42] = { name = "Scrap SMG",         velocity = 544.7,  range = 466.9,  drop_mult = 1.13, patterns = { "scrap_smg", "scrap smg", "makeshift smg" } },
+    [43] = { name = "Scrap Sniper",      velocity = 1011.6, range = 972.7,  drop_mult = 1.13, patterns = { "scrap_sniper", "scrap sniper", "makeshift sniper" } },
+    [44] = { name = "Shotgun Makeshift", velocity = 389.1,  range = 136.1,  drop_mult = 1.13, patterns = { "shotgunmakeshift", "shotgun makeshift", "makeshift shotgun" } },
 }
 
 local WEAPON_COMBO = {}
@@ -958,7 +1048,7 @@ base_ui:add_checkbox("Misc", "Desync Marker", "ds_show_outside_warning", "Show O
 
 base_ui:add_group("Misc", "Info")
 base_ui:add_label("Misc", "Info", "Press toggle key to open/close UI")
-base_ui:add_label("Misc", "Info", "Drag titlebar to move")
+base_ui:add_label("Misc", "Info", "Press END to toggle Perf Overlay")
 
 base_ui:add_group("Config", "UI Customization")
 base_ui:add_hotkey("Config", "UI Customization", "ui_toggle_key", "Menu Toggle Key", 0x2D)
@@ -998,7 +1088,10 @@ local s = {}
 local function sync_settings()
     for id, v in pairs(base_ui.state.values) do s[id] = v end
     for id, c in pairs(base_ui.state.colors) do s[id .. "_color"] = c end
-    for id, k in pairs(base_ui.state.keys) do s[id .. "_key"] = k end
+    for id, k in pairs(base_ui.state.keys) do
+        s[id .. "_key"] = k
+        s[id] = k
+    end
 end
 
 local function update_visibility()
@@ -1069,10 +1162,16 @@ end
 -- ═══════════════════════════════════════════════════════════════════════
 
 local cached_cw = nil
+local cw_last_search = 0
+local CW_SEARCH_INTERVAL_MS = 3000
+
 local function find_current_weapon()
     if cached_cw and cached_cw.Parent then return cached_cw end
     cached_cw = nil
-    for _, obj in ipairs(game.Workspace:GetDescendants()) do
+    local now = utility.GetTickCount()
+    if now - cw_last_search < CW_SEARCH_INTERVAL_MS then return nil end
+    cw_last_search = now
+    for _, obj in ipairs(game.Workspace:GetChildren()) do
         if obj.Name == "CurrentWeapon" and obj:IsA("Model") then
             cached_cw = obj
             return obj
@@ -1115,6 +1214,8 @@ local bal_last_written = nil
 local bal_last_effective = nil
 
 local function autoswitch_ballistics()
+    if not s.bal_enabled then return end
+
     local auto_combo = weapon_to_combo(AUTO_INDEX)
     local current = tonumber(s.bal_weapon) or auto_combo
     if bal_last_written == nil then
@@ -1147,92 +1248,142 @@ local function autoswitch_ballistics()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════
--- VEHICLES
+-- VEHICLES (com orçamento por frame)
 -- ═══════════════════════════════════════════════════════════════════════
 
 local VEHICLES = {}
 local veh_last_scan = 0
-local VEH_SCAN_INTERVAL_MS = 800
+local VEH_SCAN_INTERVAL_MS = 1500
+local veh_scan_queue = nil
+local veh_scan_index = 1
+local veh_scan_build = nil
+local VEH_SCAN_PER_FRAME = 2
 
-local function is_vehicle_model(model)
+local function is_vehicle_model_fast(model)
     if not model or model.ClassName ~= "Model" then return false end
     if model.Parent ~= game.Workspace then return false end
     if model.Name ~= "WorldModel" then return false end
-    local mesh_count = 0
-    local has_wheel = false
-    for _, c in ipairs(model:GetDescendants()) do
-        if c:IsA("MeshPart") then
-            mesh_count = mesh_count + 1
-            if not has_wheel then
-                local lname = string.lower(c.Name)
-                if string.find(lname, "wheel", 1, true) then has_wheel = true end
-            end
-        end
-    end
-    return mesh_count >= 6 and has_wheel
+    return true
 end
 
-local function get_vehicle_root(model)
-    local best, best_size = nil, 0
-    for _, c in ipairs(model:GetChildren()) do
+local function analyze_vehicle(model)
+    local descendants = model:GetDescendants()
+    local mesh_count = 0
+    local has_wheel = false
+    local has_red_rotator = false
+    local has_white_rotator = false
+    local has_wheel1 = false
+
+    for i = 1, #descendants do
+        local c = descendants[i]
+        if c:IsA("MeshPart") then
+            mesh_count = mesh_count + 1
+            local n = c.Name or ""
+            if not has_wheel and string.find(string.lower(n), "wheel", 1, true) then
+                has_wheel = true
+            end
+            if n == "RedRotator" then has_red_rotator = true end
+            if n == "WhiteRotator" then has_white_rotator = true end
+            if n == "wheel1_mesh" then has_wheel1 = true end
+        end
+    end
+
+    if mesh_count < 6 or not has_wheel then return nil end
+
+    local root, best_vol = nil, 0
+    local children = model:GetChildren()
+    for i = 1, #children do
+        local c = children[i]
         if c:IsA("BasePart") then
             local sz = c.Size
             local vol = sz.X * sz.Y * sz.Z
-            if vol > best_size then
-                best_size = vol
-                best = c
-            end
+            if vol > best_vol then best_vol = vol; root = c end
         end
     end
-    return best
-end
+    if not root then return nil end
 
-local function get_vehicle_display_name(model)
-    local has_rotator = false
-    local has_truck_wheel = false
-    local has_wheel1 = false
-    for _, c in ipairs(model:GetDescendants()) do
-        if c:IsA("MeshPart") then
-            local lname = string.lower(c.Name)
-            if string.find(lname, "rotator", 1, true) then has_rotator = true end
-            if string.find(lname, "truck_wheel", 1, true) then has_truck_wheel = true end
-            if string.find(lname, "wheel1_mesh", 1, true) then has_wheel1 = true end
-        end
-    end
-    if has_rotator or has_truck_wheel then return "Police Car" end
-    if has_wheel1 then return "Pickup" end
-    for _, c in ipairs(model:GetChildren()) do
-        if c:IsA("MeshPart") then
-            local lname = string.lower(c.Name)
-            if not string.find(lname, "wheel", 1, true)
-                and not string.find(lname, "rotator", 1, true)
-                and not string.find(lname, "collision", 1, true)
-                and not string.find(lname, "stand", 1, true) then
-                return c.Name
+    local display_name
+    if has_red_rotator or has_white_rotator then
+        display_name = "Police Car"
+    elseif has_wheel1 then
+        display_name = "Pickup"
+    else
+        local best_name, best_v = nil, 0
+        for i = 1, #descendants do
+            local c = descendants[i]
+            if c:IsA("MeshPart") then
+                local n = c.Name or ""
+                local lname = string.lower(n)
+                local junk =
+                    string.find(lname, "wheel", 1, true) or
+                    string.find(lname, "rotator", 1, true) or
+                    string.find(lname, "stand", 1, true) or
+                    string.find(lname, "light", 1, true) or
+                    string.find(lname, "glass", 1, true) or
+                    string.find(lname, "plate", 1, true) or
+                    string.find(lname, "interior", 1, true) or
+                    string.find(lname, "exterior", 1, true) or
+                    n == "MeshPart"
+                if not junk then
+                    local sz = c.Size
+                    local vol = sz and (sz.X * sz.Y * sz.Z) or 0
+                    if vol > best_v then best_v = vol; best_name = n end
+                end
             end
         end
+        local NAME_MAP = {
+            ["CollisionHelper"] = "Car",
+            ["Full Base"]       = "Car",
+            ["Body"]            = "Car",
+            ["Truck_Wheel"]     = "Truck",
+            ["Truck"]           = "Truck",
+            ["SW"]              = "Car",
+        }
+        if best_name then
+            display_name = NAME_MAP[best_name] or best_name
+        else
+            display_name = "Vehicle"
+        end
     end
-    return "Vehicle"
+
+    return { model = model, root = root, name = display_name }
 end
 
 local function scan_vehicles()
     local now = utility.GetTickCount()
-    if now - veh_last_scan < VEH_SCAN_INTERVAL_MS then return end
-    veh_last_scan = now
-    local result = {}
-    for _, child in ipairs(game.Workspace:GetChildren()) do
-        if is_vehicle_model(child) then
-            local root = get_vehicle_root(child)
-            if root then
-                result[#result + 1] = {
-                    model = child,
-                    root = root,
-                    name = get_vehicle_display_name(child),
-                }
+
+    if not veh_scan_queue and (now - veh_last_scan) >= VEH_SCAN_INTERVAL_MS then
+        veh_last_scan = now
+        local children = game.Workspace:GetChildren()
+        veh_scan_queue = {}
+        for i = 1, #children do
+            local c = children[i]
+            if is_vehicle_model_fast(c) then
+                veh_scan_queue[#veh_scan_queue + 1] = c
             end
         end
+        veh_scan_index = 1
+        veh_scan_build = {}
     end
-    VEHICLES = result
+
+    if not veh_scan_queue then return end
+
+    local processed = 0
+    while veh_scan_index <= #veh_scan_queue and processed < VEH_SCAN_PER_FRAME do
+        local model = veh_scan_queue[veh_scan_index]
+        veh_scan_index = veh_scan_index + 1
+        processed = processed + 1
+        if model and model.Parent then
+            local entry = analyze_vehicle(model)
+            if entry then veh_scan_build[#veh_scan_build + 1] = entry end
+        end
+    end
+
+    if veh_scan_index > #veh_scan_queue then
+        VEHICLES = veh_scan_build
+        veh_scan_queue = nil
+        veh_scan_build = nil
+    end
 end
 
 local function draw_vehicles(cam)
@@ -1610,12 +1761,20 @@ local function draw_3d_box(bb, col)
     end
 end
 
+local SCREEN_CACHE = {}
+
 local function project(e, cam)
     local hp = e.hrp.Position
     if not hp then return nil end
     local dx, dy, dz = hp.X-cam.X, hp.Y-cam.Y, hp.Z-cam.Z
     local dist_sq = dx*dx + dy*dy + dz*dz
     local dist = sqrt(dist_sq)
+
+    local cache = SCREEN_CACHE[e]
+    if not cache then
+        cache = {}
+        SCREEN_CACHE[e] = cache
+    end
 
     local mnx, mny, mxx, mxy, any = 1e9, 1e9, -1e9, -1e9, false
     local wnx, wny, wnz = 1e9, 1e9, 1e9
@@ -1625,6 +1784,7 @@ local function project(e, cam)
         local pos, sz = part.Position, part.Size
         if pos then
             local px, py, pv = draw.WorldToScreen(pos.X, pos.Y, pos.Z)
+            cache[part] = {px, py, pv}
             if pv then
                 any = true
                 mnx, mny = min(mnx, px), min(mny, py)
@@ -1642,11 +1802,11 @@ local function project(e, cam)
     local pady = (mxy - mny) * 0.12 + 6
     local b = {x = mnx - padx, y = mny - pady, w = (mxx-mnx) + padx*2, h = (mxy-mny) + pady*2}
     local bb = {wnx, wny, wnz, wxx, wxy, wxz}
-    return b, dist, bb
+    return b, dist, bb, cache
 end
 
 local function render_entity(e, cam)
-    local b, dist, bb = project(e, cam)
+    local b, dist, bb, cache = project(e, cam)
     if not b or dist > s.max_distance then return end
 
     local col
@@ -1694,11 +1854,12 @@ local function render_entity(e, cam)
     if s.skeleton and not too_small then
         local sc = e.is_special and {1, 0.8, 0, 1} or (s.skeleton_color or col)
         for k = 1, #e.skel do
-            local ap, bp = e.skel[k][1].Position, e.skel[k][2].Position
-            if ap and bp then
-                local ax, ay, av = draw.WorldToScreen(ap.X, ap.Y, ap.Z)
-                local bx, by, bv = draw.WorldToScreen(bp.X, bp.Y, bp.Z)
-                if av and bv then draw.Line(ax, ay, bx, by, sc, 2) end
+            local a_part = e.skel[k][1]
+            local b_part = e.skel[k][2]
+            local ca = cache[a_part]
+            local cb = cache[b_part]
+            if ca and cb and ca[3] and cb[3] then
+                draw.Line(ca[1], ca[2], cb[1], cb[2], sc, 2)
             end
         end
     end
@@ -2440,46 +2601,83 @@ base_ui:add_button("Config", "Config", "cfg_load", "Load Config", load_config)
 -- ═══════════════════════════════════════════════════════════════════════
 
 OnFrame = function()
+    local _frame_t0 = perf_start()
+
+    perf_toggle_check()
+
     sw, sh = draw.GetScreenSize()
 
+    local t = perf_start()
     sync_settings()
+    perf_record("sync_settings", t)
+
+    t = perf_start()
     autoswitch_ballistics()
+    perf_record("autoswitch_bal", t)
+
+    t = perf_start()
     update_visibility()
+    perf_record("update_visibility", t)
 
     if base_ui.state.keys["ui_toggle_key"] then
         base_ui.state.toggle_key = base_ui.state.keys["ui_toggle_key"]
     end
 
+    t = perf_start()
     process_hotkey_listening(base_ui)
     process_toggle(base_ui)
+    perf_record("ui_input", t)
 
+    t = perf_start()
     scan_vehicles()
+    perf_record("scan_vehicles", t)
 
     local okc, cam = pcall(camera.GetPosition)
     if not okc or not cam then
         draw_window(base_ui)
+        perf_record("frame_total", _frame_t0)
+        perf_report()
         return
     end
 
+    t = perf_start()
     pcall(update_local_addr, cam)
+    perf_record("local_addr", t)
 
     if entry_count > 0 then
+        t = perf_start()
         pcall(do_aimbot, cam)
+        perf_record("aimbot", t)
+
+        t = perf_start()
         draw_aim_visuals()
+        perf_record("aim_visuals", t)
     end
 
+    t = perf_start()
     pcall(draw_radar, cam)
-    pcall(draw_weapon_hud)
-    pcall(draw_vehicles, cam)
-    pcall(draw_desync_marker)
+    perf_record("radar", t)
 
-    local t = s.targets or {}
-    local show_players = t[1] == true
-    local show_zombies = t[2] == true
+    t = perf_start()
+    pcall(draw_weapon_hud)
+    perf_record("weapon_hud", t)
+
+    t = perf_start()
+    pcall(draw_vehicles, cam)
+    perf_record("vehicles", t)
+
+    t = perf_start()
+    pcall(draw_desync_marker)
+    perf_record("desync", t)
+
+    local tt = s.targets or {}
+    local show_players = tt[1] == true
+    local show_zombies = tt[2] == true
     if s.esp_enabled and entry_count > 0 and (show_players or show_zombies) then
         local only_special = s.only_special == true
         local max_sq = (tonumber(s.max_distance) or 5000) ^ 2
         local cx, cy, cz = cam.X, cam.Y, cam.Z
+        t = perf_start()
         for i = 1, entry_count do
             local e = entries[i]
             local hrp = e.hrp
@@ -2500,9 +2698,16 @@ OnFrame = function()
                 end
             end
         end
+        perf_record("render_entities", t)
     end
 
+    t = perf_start()
     draw_window(base_ui)
+    perf_record("draw_window", t)
+
+    perf_record("frame_total", _frame_t0)
+
+    perf_report()
 end
 
 base_ui:apply_ui_settings()

@@ -31,7 +31,7 @@ end)
 local GAME_GRAVITY_MPS = GAME_GRAVITY_STUDS / STUDS_PER_METER
 
 -- ═══════════════════════════════════════════════════════════════════════
--- PERF PROFILER (desligado por padrão — liga/desliga com END)
+-- PERF PROFILER (END para ligar/desligar)
 -- ═══════════════════════════════════════════════════════════════════════
 
 local function key_down_early(vk)
@@ -1162,37 +1162,66 @@ end
 -- ═══════════════════════════════════════════════════════════════════════
 
 local cached_cw = nil
-local cw_last_search = 0
-local CW_SEARCH_INTERVAL_MS = 3000
 
 local function find_current_weapon()
-    if cached_cw and cached_cw.Parent then return cached_cw end
-    cached_cw = nil
-    local now = utility.GetTickCount()
-    if now - cw_last_search < CW_SEARCH_INTERVAL_MS then return nil end
-    cw_last_search = now
-    for _, obj in ipairs(game.Workspace:GetChildren()) do
-        if obj.Name == "CurrentWeapon" and obj:IsA("Model") then
-            cached_cw = obj
-            return obj
+    if cached_cw and cached_cw.Parent then
+        local pointer = cached_cw:FindFirstChild("Pointer")
+        if pointer and pointer:IsA("ObjectValue") then
+            local ok, val = pcall(function() return pointer.Value end)
+            if ok and val and val.Name and val.Name ~= "" then
+                return cached_cw
+            end
         end
     end
+
+    cached_cw = nil
+    local ws = game.Workspace
+    if not ws then return nil end
+
+    local cam_svc = ws:FindFirstChild("Camera")
+    if cam_svc then
+        local cw = cam_svc:FindFirstChild("CurrentWeapon")
+        if cw and cw:IsA("Model") then
+            cached_cw = cw
+            return cw
+        end
+    end
+
+    local cw = ws:FindFirstChild("CurrentWeapon")
+    if cw and cw:IsA("Model") then
+        cached_cw = cw
+        return cw
+    end
+
     return nil
 end
 
 local function get_local_weapon()
     local cw = find_current_weapon()
-    if cw then
-        local pointer = cw:FindFirstChild("Pointer")
-        if pointer and pointer:IsA("ObjectValue") and pointer.Value then
-            local name = pointer.Value.Name
-            if name and name ~= "" then return name, "Pointer" end
-        end
-        local item = cw:FindFirstChild("InventoryItem")
-        if item and item:IsA("ObjectValue") and item.Value then
-            return item.Value.Name, "InventoryItem"
+    if not cw then return nil, "not found" end
+
+    local pointer = cw:FindFirstChild("Pointer")
+    if pointer and pointer:IsA("ObjectValue") then
+        local ok, val = pcall(function() return pointer.Value end)
+        if ok and val then
+            local name = val.Name
+            if name and name ~= "" then
+                return name, "Pointer"
+            end
         end
     end
+
+    local item = cw:FindFirstChild("InventoryItem")
+    if item and item:IsA("ObjectValue") then
+        local ok, val = pcall(function() return item.Value end)
+        if ok and val then
+            local name = val.Name
+            if name and name ~= "" then
+                return name, "InventoryItem"
+            end
+        end
+    end
+
     return nil, "not found"
 end
 
@@ -1248,7 +1277,7 @@ local function autoswitch_ballistics()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════
--- VEHICLES (com orçamento por frame)
+-- VEHICLES
 -- ═══════════════════════════════════════════════════════════════════════
 
 local VEHICLES = {}
@@ -1657,6 +1686,7 @@ local SCAN_BUDGET = 12
 local scan_queue = nil
 local scan_index = 1
 local scan_build = nil
+local scan_start_time = nil
 local last_disable_zombie = false
 
 local function rescan_step()
@@ -1665,8 +1695,21 @@ local function rescan_step()
         scan_queue = nil
         scan_build = nil
         scan_index = 1
+        scan_start_time = nil
     end
+
+    if scan_queue and scan_start_time then
+        local elapsed = utility.GetTickCount() - scan_start_time
+        if elapsed > 3000 then
+            scan_queue = nil
+            scan_build = nil
+            scan_index = 1
+            scan_start_time = nil
+        end
+    end
+
     if not scan_queue then
+        scan_start_time = utility.GetTickCount()
         local ga = game.Workspace and game.Workspace:FindFirstChild("game_assets")
         local folder = ga and ga:FindFirstChild("Entities")
         if not folder then
@@ -1678,20 +1721,25 @@ local function rescan_step()
         scan_index = 1
         scan_build = {}
     end
+
     local last = min(scan_index + SCAN_BUDGET - 1, #scan_queue)
     for i = scan_index, last do
         local model = scan_queue[i]
         if model and model.ClassName == "Model" then
-            local e = classify(model)
-            if e then scan_build[#scan_build + 1] = e end
+            local ok, e = pcall(classify, model)
+            if ok and e then
+                scan_build[#scan_build + 1] = e
+            end
         end
     end
     scan_index = last + 1
+
     if scan_index > #scan_queue then
-        entries = scan_build
+        entries = scan_build or {}
         entry_count = #entries
         scan_queue = nil
         scan_build = nil
+        scan_start_time = nil
     end
 end
 
@@ -1761,20 +1809,12 @@ local function draw_3d_box(bb, col)
     end
 end
 
-local SCREEN_CACHE = {}
-
 local function project(e, cam)
     local hp = e.hrp.Position
     if not hp then return nil end
     local dx, dy, dz = hp.X-cam.X, hp.Y-cam.Y, hp.Z-cam.Z
     local dist_sq = dx*dx + dy*dy + dz*dz
     local dist = sqrt(dist_sq)
-
-    local cache = SCREEN_CACHE[e]
-    if not cache then
-        cache = {}
-        SCREEN_CACHE[e] = cache
-    end
 
     local mnx, mny, mxx, mxy, any = 1e9, 1e9, -1e9, -1e9, false
     local wnx, wny, wnz = 1e9, 1e9, 1e9
@@ -1784,7 +1824,6 @@ local function project(e, cam)
         local pos, sz = part.Position, part.Size
         if pos then
             local px, py, pv = draw.WorldToScreen(pos.X, pos.Y, pos.Z)
-            cache[part] = {px, py, pv}
             if pv then
                 any = true
                 mnx, mny = min(mnx, px), min(mny, py)
@@ -1802,11 +1841,11 @@ local function project(e, cam)
     local pady = (mxy - mny) * 0.12 + 6
     local b = {x = mnx - padx, y = mny - pady, w = (mxx-mnx) + padx*2, h = (mxy-mny) + pady*2}
     local bb = {wnx, wny, wnz, wxx, wxy, wxz}
-    return b, dist, bb, cache
+    return b, dist, bb
 end
 
 local function render_entity(e, cam)
-    local b, dist, bb, cache = project(e, cam)
+    local b, dist, bb = project(e, cam)
     if not b or dist > s.max_distance then return end
 
     local col
@@ -1851,15 +1890,22 @@ local function render_entity(e, cam)
         draw.Text(cx - tw * 0.5, b.y - fs - 2, label, nc, fs)
     end
 
+    -- SKELETON (sem cache — WorldToScreen direto)
     if s.skeleton and not too_small then
         local sc = e.is_special and {1, 0.8, 0, 1} or (s.skeleton_color or col)
         for k = 1, #e.skel do
             local a_part = e.skel[k][1]
             local b_part = e.skel[k][2]
-            local ca = cache[a_part]
-            local cb = cache[b_part]
-            if ca and cb and ca[3] and cb[3] then
-                draw.Line(ca[1], ca[2], cb[1], cb[2], sc, 2)
+            if a_part and b_part then
+                local ap = a_part.Position
+                local bp = b_part.Position
+                if ap and bp then
+                    local ax, ay, av = draw.WorldToScreen(ap.X, ap.Y, ap.Z)
+                    local bx, by, bv = draw.WorldToScreen(bp.X, bp.Y, bp.Z)
+                    if av and bv then
+                        draw.Line(ax, ay, bx, by, sc, 2)
+                    end
+                end
             end
         end
     end
@@ -2692,7 +2738,7 @@ OnFrame = function()
                         local dx, dy, dz = hp.X-cx, hp.Y-cy, hp.Z-cz
                         local dsq = dx*dx + dy*dy + dz*dz
                         if dsq <= max_sq then
-                            render_entity(e, cam)
+                            pcall(render_entity, e, cam)
                         end
                     end
                 end
